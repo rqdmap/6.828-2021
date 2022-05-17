@@ -164,6 +164,8 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+
+  p->traced = 0;
 }
 
 // Create a user page table for a given process,
@@ -314,6 +316,8 @@ fork(void)
   acquire(&np->lock);
   np->state = RUNNABLE;
   release(&np->lock);
+
+  np->traced = p->traced;
 
   return pid;
 }
@@ -653,4 +657,18 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+
+// Returns the number of processes running on cpu.
+uint64
+procsize(void)
+{
+  struct proc *p;
+  int cnt = 0;
+  for(p = proc; p < &proc[NPROC]; p++){
+    if(p->state == UNUSED) continue;
+    cnt++;
+  }
+  return cnt;
 }

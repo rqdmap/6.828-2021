@@ -6,6 +6,11 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"
+
+
+extern uint64 ksize(void);
+extern uint64 procsize(void);
 
 uint64
 sys_exit(void)
@@ -94,4 +99,33 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64
+sys_trace(void){
+  int mode;
+  if(argint(0, &mode) < 0) return -1;
+  struct proc *p = myproc();
+  p->traced = mode;
+  return 0;
+}
+
+uint64
+sys_sysinfo(void){
+  uint64 si;
+  struct proc *p = myproc();
+
+
+  if(argaddr(0, &si) < 0) return -1;
+
+  // printf("free memory size: %d (B)\n", ksize());
+  // printf("number of processes: %d\n", procsize());
+
+  uint64 kSize = ksize();
+  uint64 procSize = procsize();
+  
+  if(copyout(p->pagetable, (uint64)&(((struct sysinfo *)si)->freemem), (char*)&kSize, sizeof(kSize)) == -1 || \
+    copyout(p->pagetable, (uint64)&(((struct sysinfo *)si)->nproc), (char*)&procSize, sizeof(procSize)) == -1) return -1;
+  
+  return 0;
 }
