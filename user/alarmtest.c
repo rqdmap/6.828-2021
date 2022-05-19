@@ -23,6 +23,7 @@ main(int argc, char *argv[])
 {
   test0();
   test1();
+  // exit(0);
   test2();
   exit(0);
 }
@@ -85,7 +86,7 @@ test1()
   count = 0;
   j = 0;
   sigalarm(2, periodic);
-  for(i = 0; i < 500000000; i++){
+  for(i = 0; i < 200 * 2500000; i++){
     if(count >= 10)
       break;
     foo(i, &j);
