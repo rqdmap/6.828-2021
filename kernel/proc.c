@@ -140,7 +140,6 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
-
   return p;
 }
 
@@ -272,6 +271,7 @@ growproc(int n)
 int
 fork(void)
 {
+  // printf("Start forking\n");
   int i, pid;
   struct proc *np;
   struct proc *p = myproc();
@@ -315,6 +315,7 @@ fork(void)
   np->state = RUNNABLE;
   release(&np->lock);
 
+  // printf("Complete forking\n");
   return pid;
 }
 

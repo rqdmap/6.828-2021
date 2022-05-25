@@ -16,6 +16,8 @@ void kernelvec();
 
 extern int devintr();
 
+extern int cowhandler(pagetable_t pagetable, uint64 va);
+
 void
 trapinit(void)
 {
@@ -66,8 +68,24 @@ usertrap(void)
 
     syscall();
   } else if((which_dev = devintr()) != 0){
-    // ok
-  } else {
+    //ok
+  }
+  else if(r_scause() == 0xf){
+    // printf("Handlering....");
+
+    uint64 va = r_stval();
+
+    if(va >= MAXVA) p->killed = 1;
+    else{
+        pte_t *pte = walk(p->pagetable, va, 0);
+        if(pte && *pte & PTE_COW && cowhandler(p->pagetable, PGROUNDDOWN(va)) < 0)
+            p->killed = 1;
+    }
+    
+
+    // printf("Handlered OK\n");
+  }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
