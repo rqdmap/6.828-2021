@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#define DEBUG printf("Line: %d\n", __LINE__)
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -148,7 +149,7 @@ sys_link(void)
   if(dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0){
     iunlockput(dp);
     goto bad;
-  }
+  }                                   
   iunlockput(dp);
   iput(ip);
 
@@ -283,6 +284,8 @@ create(char *path, short type, short major, short minor)
   return ip;
 }
 
+
+
 uint64
 sys_open(void)
 {
@@ -304,13 +307,28 @@ sys_open(void)
       return -1;
     }
   } else {
-    if((ip = namei(path)) == 0){
-      end_op();
-      return -1;
-    }
-    ilock(ip);
-    if(ip->type == T_DIR && omode != O_RDONLY){
+    int fail = 1;
+    for(int __ = 0; __ < 10; __++){
+      if((ip = namei(path)) == 0){
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+      // if(ip->type == T_SYMLINK) printf("%d: %s, %d\n", __, path, ip->type);
+
+      if(ip->type == T_DIR && omode != O_RDONLY){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      if(ip->type != T_SYMLINK || (omode & O_NOFOLLOW)){
+        fail = 0;
+        break;
+      }
+      readi(ip, 0, (uint64)path, 0, MAXPATH);
       iunlockput(ip);
+    }
+    if(fail){
       end_op();
       return -1;
     }
@@ -482,5 +500,43 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_symlink(void){
+  char target[MAXPATH], path[MAXPATH];
+
+  struct file *fp;
+  struct inode *nip;
+
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+  
+  begin_op();
+  if((nip = create(path, T_SYMLINK, 0, 0)) == 0){
+    end_op();
+    return -1;
+  }
+
+  nip->ref = 1;
+  nip->valid = 1;
+  //第0块内容存放了指向的路径
+  if(writei(nip, 0, (uint64)target, 0, MAXPATH) < 0){
+    iunlockput(nip);
+    end_op();
+    return -1;
+  }
+
+
+
+  if((fp = filealloc()) == 0){
+    iunlockput(nip);
+    end_op();
+    return -1;
+  }
+  fp->ip = nip;
+  iunlockput(nip);
+  end_op();
   return 0;
 }
