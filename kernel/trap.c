@@ -15,6 +15,8 @@ extern char trampoline[], uservec[], userret[];
 void kernelvec();
 
 extern int devintr();
+extern int pgMissHandler(pagetable_t pagetable, uint64 va, 
+    struct mmapInfo* mi);
 
 void
 trapinit(void)
@@ -67,7 +69,21 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if(r_scause() == 0xd){
+    int fd;
+    uint64 va = r_stval();
+
+    for(fd = 0; fd < NOFILE; fd++){
+      if(p->mmapInfo[fd].addr <= va && va < p->mmapInfo[fd].addr + p->mmapInfo[fd].length)
+        break;
+    }
+    // printf("%d: %d %d %d\n", r_stval(), fd, p->mmapInfo[fd].addr, p->mmapInfo[fd].length);
+    if(fd == NOFILE)
+      p->killed = 1;
+    else
+      pgMissHandler(p->pagetable, va, &p->mmapInfo[fd]);
+  }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

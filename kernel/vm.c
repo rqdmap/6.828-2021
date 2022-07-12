@@ -5,6 +5,11 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
+#include "fcntl.h"
+#include "sleeplock.h"
+#include "file.h"
 
 /*
  * the kernel's page table.
@@ -431,4 +436,200 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+// va 地址并未对应一个物理地址，进行分配。
+int
+pgMissHandler(pagetable_t pagetable, uint64 va, 
+    struct mmapInfo* mi){
+  pte_t *pte;
+  char *mem;
+  uint prot;
+  uint tot;
+  struct file* fp = mi->fp;
+
+  if((pte = walk(pagetable, va, 0)) == 0)
+    panic("pgMissHandler: pte should exist");
+  
+  if((mem = kalloc()) == 0) 
+    return -1;
+
+  // 为mem写入内容
+  ilock(fp->ip);
+  if((tot = readi(fp->ip, 0, (uint64)mem, PGROUNDDOWN(va) - mi->addr, PGSIZE)) < 0)
+    return -1;
+  iunlock(fp->ip);
+  for(uint i = tot; i < PGSIZE; i++) mem[i] = 0;
+  
+  prot = PTE_V | PTE_U;
+  //假设prot不包含Exec
+  if(mi->prot & PROT_READ) 
+    prot |= PTE_R;
+  if(mi->prot & PROT_WRITE)  
+    prot |= PTE_W;
+
+  uvmunmap(pagetable, va, 1, 0);
+  //重新映射回去
+  if(mappages(pagetable, va, PGSIZE, (uint64)mem, prot) != 0){
+    kfree(mem);
+    return -1;
+  }
+  return 0;
+}
+
+uint64 
+mmapalloc(struct proc *p, uint pages){
+  uint64 res;
+  acquire(&p->lock);
+  p->mp -= pages * PGSIZE;
+  res = p->mp;
+  release(&p->lock);
+  return res;
+}
+
+uint64
+sys_mmap(void){
+  uint64 addr;
+  int length, prot, flags, fd, offset;
+  struct proc *p = myproc();
+  uint64 start, a;
+  uint pages;
+  pagetable_t pagetable;
+  pte_t *pte;
+  struct mmapInfo *mi = 0;
+
+  pagetable = p->pagetable;
+
+  if(argaddr(0, &addr) || argint(1, &length) || argint(2, &prot) 
+    || argint(3, &flags) || argint(4, &fd) || argint(5, &offset))
+    return -1;
+
+  if(length == 0) 
+    return -1;
+
+  for(int i = 0; i < NOFILE; i++) if(p->mmapInfo[i].length == 0){
+    mi = &p->mmapInfo[i];
+    break;
+  }
+  if(mi == 0)
+    panic("mmap: No free mmap areas");
+  
+  mi->fp = p->ofile[fd];
+  mi->flags = flags;
+  if(!mi->fp->readable && prot & PROT_READ)
+    return -1;
+  if(!mi->fp->writable && prot & PROT_WRITE && mi->flags & MAP_SHARED)
+    return -1;
+  
+  mi->prot = prot;
+  mi->length = length;
+  mi->offset = offset;
+
+  pages = PGROUNDUP(length) / PGSIZE;
+  mi->addr = mmapalloc(p, pages);
+
+  for(a = 0; a < length; a += PGSIZE){
+    if((pte = walk(pagetable, a + mi->addr, 1)) == 0)
+      goto err;
+
+    *pte = PTE_V | PTE_E;
+  }
+
+  filedup(p->ofile[fd]);
+
+  return mi->addr;
+
+err:
+  uvmunmap(pagetable, mi->addr, (a + mi->addr) / PGSIZE, 1);
+  return -1;
+}
+
+//以页框为单位的写回
+int 
+write_back(struct inode *ip, uint64 va, uint off){
+  if(va % PGSIZE)
+    panic("write_back: not aligned");
+  
+  begin_op();
+  ilock(ip);
+  if(writei(ip, 1, va, off, PGSIZE) < 0){
+    end_op();
+    return -1;
+  }
+  iunlock(ip);
+  end_op();
+  return 0;
+}
+
+void 
+__munmap(pagetable_t pagetable, uint64 start, uint64 end, struct mmapInfo *mi){
+  pte_t *pte;
+
+  for(uint64 va = start; va < end; va += PGSIZE){
+    if((pte = walk(pagetable, va, 0)) == 0)
+      panic("munmap: walk");
+
+    if(mi->flags & MAP_SHARED){
+      if(write_back(mi->fp->ip, va, va - mi->addr + mi->offset) < 0)
+        panic("munmap: write_back");
+    }
+
+    if(!(*pte & PTE_E))
+      kfree((void*)(uint64)PTE2PA(*pte));
+    *pte = 0;
+  }
+}
+
+uint64
+sys_munmap(void){
+  uint64 addr;
+  int length;
+  struct proc *p = myproc();
+  pagetable_t pagetable;
+  int fd = -1;
+  struct mmapInfo* mi;
+
+  pagetable = p->pagetable;
+
+  if(argaddr(0, &addr) || argint(1, &length))
+    return -1;
+
+  if(length == 0) 
+    return 0;
+  
+  for(int i = 0; i < NOFILE; i++){
+    if(p->mmapInfo[i].addr <= addr && addr < p->mmapInfo[i].addr + p->mmapInfo[i].length){
+      fd = i;
+      break;
+    }
+  }
+  if(fd == -1)
+    panic("munmap: No such file");
+  mi = &p->mmapInfo[fd];
+
+  if(mi->addr <= addr && addr + length <= mi->addr + mi->length);
+  else
+    panic("munmap: Out of bound");
+  //保证是前缀或后缀
+  if(mi->addr == addr);
+  else if(mi->addr + mi->length == addr + length);
+  else
+    panic("munmap: Not valid range");
+
+  if(length == mi->length){
+    __munmap(pagetable, PGROUNDDOWN(mi->addr), PGROUNDUP(mi->addr + mi->length), mi);
+    fileclose(mi->fp);
+    memset(mi, 0, sizeof(struct mmapInfo));
+  }else if(addr == mi->addr){
+    //可能会有部分页残余
+    __munmap(pagetable, PGROUNDDOWN(mi->addr), PGROUNDDOWN(mi->addr + length), mi);
+    mi->addr += length;
+    mi->length -= length;
+    mi->offset += length;
+  }
+  else {
+    __munmap(pagetable, PGROUNDUP(mi->addr), PGROUNDUP(mi->addr + length), mi);
+    mi->length -= length;
+  }
+  return 0;
 }

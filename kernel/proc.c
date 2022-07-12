@@ -26,6 +26,17 @@ extern char trampoline[]; // trampoline.S
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
 
+extern void 
+__munmap(pagetable_t pagetable, uint64 start, uint64 end, struct mmapInfo *mi);
+
+extern uint paref[];
+
+extern pte_t *
+walk(pagetable_t pagetable, uint64 va, int alloc);
+
+extern void*
+memcpy(void *dst, const void *src, uint n);
+
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
@@ -141,6 +152,8 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  memset(p->mmapInfo, 0, sizeof(p->mmapInfo));
+  p->mp = MMAPEND;
   return p;
 }
 
@@ -164,6 +177,9 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+
+  p->mp = MMAPEND;
+  memset(p->mmapInfo, 0, sizeof(p->mmapInfo));
 }
 
 // Create a user page table for a given process,
@@ -302,8 +318,31 @@ fork(void)
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
+  
 
   pid = np->pid;
+
+  np->mp = p->mp;
+  memcpy((char*)np->mmapInfo, (char*)p->mmapInfo, sizeof(p->mmapInfo));
+  for(i = 0; i < NOFILE; i++){
+    if(np->mmapInfo[i].fp)
+      filedup(np->mmapInfo[i].fp);
+  }
+
+  pte_t *pte;
+  uint64 va, pa;
+  for(va = p->mp; va < MMAPEND; va += PGSIZE){
+    if((pte = walk(p->pagetable, va, 0)) == 0)
+      panic("fork: mmap page should exist");
+    
+    if((*pte & PTE_V)){
+      pa = PTE2PA(*pte);
+      paref[(uint64)pa / PGSIZE]++;
+      if(mappages(np->pagetable, va, PGSIZE, pa, PTE_FLAGS(*pte)) != 0){
+        goto mmaperr;
+      }
+    }
+  }
 
   release(&np->lock);
 
@@ -316,6 +355,10 @@ fork(void)
   release(&np->lock);
 
   return pid;
+
+mmaperr:
+  uvmunmap(np->pagetable, p->mp, (va - p->mp) / PGSIZE, 1);
+  return -1;
 }
 
 // Pass p's abandoned children to init.
@@ -350,6 +393,14 @@ exit(int status)
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
+    }
+  }
+
+  for(int fd = 0; fd < NOFILE; fd++){
+    if(p->mmapInfo[fd].length){
+      struct mmapInfo* mi = &p->mmapInfo[fd];
+      __munmap(p->pagetable, PGROUNDDOWN(mi->addr), PGROUNDUP(mi->addr + mi->length), mi);
+      fileclose(mi->fp);
     }
   }
 

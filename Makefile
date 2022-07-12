@@ -86,7 +86,7 @@ LD = $(TOOLPREFIX)ld
 OBJCOPY = $(TOOLPREFIX)objcopy
 OBJDUMP = $(TOOLPREFIX)objdump
 
-CFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb
+CFLAGS = -Wall -O0 -fno-omit-frame-pointer -ggdb
 
 ifdef LAB
 LABUPPER = $(shell echo $(LAB) | tr a-z A-Z)
@@ -188,6 +188,7 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
+	$U/_mmaptest\
 
 
 
@@ -269,7 +270,7 @@ clean:
 	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
 	*/*.o */*.d */*.asm */*.sym \
 	$U/initcode $U/initcode.out $K/kernel fs.img \
-	mkfs/mkfs .gdbinit \
+	mkfs/mkfs \
         $U/usys.S \
 	$(UPROGS) \
 	ph barrier

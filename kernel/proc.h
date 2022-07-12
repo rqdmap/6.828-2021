@@ -105,4 +105,14 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+
+  uint64 mp;                   // Virtual address of the end of mmap area 
+  struct mmapInfo{
+      uint64 addr;
+      uint32 length;
+      uint32 prot;
+      uint32 flags;
+      struct file* fp;
+      uint32 offset;
+  }mmapInfo[NOFILE];
 };
